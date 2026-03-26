@@ -143,7 +143,7 @@ Everything in scope is fair game: architecture, algorithms, hyperparameters, bat
 **Multi-agent ideation (on trigger):**
 
 1. Build context: current best code, results.tsv summary (group by category: subsystem, parameter family, outcome), "What's Been Tried".
-2. Dispatch 2 ideation workers concurrently using the platform's native concurrency mechanism. Assign distinct lenses:
+2. Dispatch 2 ideation workers concurrently (Claude Code: `Agent` with `run_in_background: true`; Codex: `spawn_agent` for each, then `wait_agent`). Assign distinct lenses:
    - **Architectural lens**: Propose experiments focused on structural changes (model architecture, data flow, system design). Each proposal: one-line hypothesis + `change_surface` + `expected_effect`.
    - **Parametric lens**: Propose experiments focused on hyperparameters, configuration, training dynamics. Same format.
 3. If `parallax == true` and a cross-model relay transport is available: dispatch 1 **Contrarian** reviewer through that transport — propose experiments that deliberately contradict the current trajectory. Read `references/prompting-codex.md` before composing the request. Include anti-recursion constraints. If no relay transport, dispatch an additional same-model contrarian worker instead and note the downgrade.
@@ -181,11 +181,15 @@ c. Fill `agents/experimenter.md` with experiment-specific variables:
 
 d. Dispatch one worker with the filled prompt, giving it exclusive ownership of that worktree. Use the platform's native concurrency mechanism:
 - **Claude Code**: `Agent(isolation: "worktree", run_in_background: true, prompt: <filled template>)` — the Agent tool can manage its own worktree, in which case skip step (a) and let the tool create the worktree. Record the returned worktree path in `in_flight`.
-- **Codex / other**: Run the worker sequentially or via platform-native concurrency. The worker must execute all commands from `$WORKTREE_PATH`.
+- **Codex**: `spawn_agent(message: <filled template>)` for each experiment. Launch all workers before any `wait_agent`. Each worker's prompt must include its `$WORKTREE_PATH` and an instruction to run all commands from that path. Do NOT use shell backgrounding (`&`, `nohup`) — use `spawn_agent` for concurrency.
+- **Other**: Run workers sequentially if no native concurrency is available. The worker must execute all commands from `$WORKTREE_PATH`.
 
 **Prepend venv activation** if the project uses a Python venv: add `source <venv_path>/bin/activate &&` before the command in `$COMMAND`. Detect venv at `.venv/`, `venv/`, or the path the user specified during setup.
 
-**3. Wait for all experimenters.** Hard gate — do not proceed until every worker finishes. Use the platform's native wait/completion mechanism. If a worker exceeds the per-experiment timeout (tracked by `dispatched_at` + timeout), mark it `timeout`.
+**3. Wait for all experimenters.** Hard gate — do not proceed until every worker finishes.
+- **Claude Code**: The system sends completion notifications for background agents. Do not poll.
+- **Codex**: Use `wait_agent(ids=[...])` to collect completions. Loop until all worker ids are resolved. Then `close_agent(id=...)` for each.
+- If a worker exceeds the per-experiment timeout (tracked by `dispatched_at` + timeout), mark it `timeout`.
 
 **4. Collect results.** For each worker:
 - The orchestrator knows each experiment's `worktree_path` from `mar-state.json`.
