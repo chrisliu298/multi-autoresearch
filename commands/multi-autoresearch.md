@@ -18,10 +18,10 @@ Read all constants from this project's **CLAUDE.md** before proceeding. Read the
 
 These are non-negotiable. Violating any of them makes the run unreliable.
 
-1. **Use the Agent tool with `isolation: "worktree"` for every experiment.** Do NOT run experiments via Bash in the main worktree. Each experiment MUST be dispatched as a separate Agent call with `isolation: "worktree"` and `run_in_background: true`. This is the whole point of multi-agent autoresearch.
+1. **Every experiment runs in its own isolated git worktree.** Do NOT run experiments in the orchestrator's main checkout. The orchestrator owns worktree creation, bookkeeping, and cleanup. If the platform provides first-class worktree-isolated workers (e.g., Claude Code's `Agent(isolation: "worktree")`), use them. Otherwise, create worktrees explicitly with `git worktree add` and dispatch workers into them.
 2. **Maintain `mar-state.json` throughout.** Create it during setup, update it on every phase transition, write it atomically (temp + rename). This is required for crash recovery.
 3. **Use the nanoresearch-compatible results.tsv format.** 7 TAB-separated columns: `#`, `timestamp`, `commit`, `metric`, `sanity`, `status`, `description`. Not 5 columns. Not CSV. Append `[wave:N]` tag to every description.
-4. **Read `agents/experimenter.md` and use it as the prompt template** for experimenter agents. Fill in the `$VARIABLE` placeholders with actual values. Do not improvise a different prompt.
+4. **Read `agents/experimenter.md` and use it as the prompt template** for experiment workers. Fill in the `$VARIABLE` placeholders with actual values. Do not improvise a different prompt.
 5. **Cherry-pick, never merge.** Use plain `git cherry-pick <commit>`. No `-X theirs`. Fail loudly on conflict.
 
 ## Inline Overrides
@@ -53,7 +53,7 @@ Check for `mar-state.json` in the project root:
 
 **On resume:**
 1. Read `branch` from `mar-state.json`. `git checkout <branch>`.
-2. Follow the Recovery Protocol in CLAUDE.md.
+2. Follow the Recovery Protocol in the project's CLAUDE.md.
 3. Jump to the recorded phase.
 
 ## Setup
@@ -140,14 +140,14 @@ Start the wave loop.
 
 Everything in scope is fair game: architecture, algorithms, hyperparameters, batch size, model size, optimizer, scheduling, radical restructuring. Do not limit to parameter tuning. Prioritize diversity — tag each hypothesis by category (architectural, parametric, algorithmic, simplification).
 
-**Multi-agent ideation (on trigger):** Read `agents/experimenter.md` for prompt context, then:
+**Multi-agent ideation (on trigger):**
 
 1. Build context: current best code, results.tsv summary (group by category: subsystem, parameter family, outcome), "What's Been Tried".
-2. Dispatch 2 subagents concurrently (`run_in_background: true`):
+2. Dispatch 2 ideation workers concurrently using the platform's native concurrency mechanism. Assign distinct lenses:
    - **Architectural lens**: Propose experiments focused on structural changes (model architecture, data flow, system design). Each proposal: one-line hypothesis + `change_surface` + `expected_effect`.
    - **Parametric lens**: Propose experiments focused on hyperparameters, configuration, training dynamics. Same format.
-3. If `parallax == true`: Also dispatch 1 Parallax via `/relay` with **Contrarian lens** — propose experiments that deliberately contradict the current trajectory. Read `references/prompting-codex.md` before composing the relay prompt. Include anti-recursion constraints.
-4. Wait for all agents. Synthesize: deduplicate by subsystem + parameter family, pick `wave_size` diverse experiments.
+3. If `parallax == true` and a cross-model relay transport is available: dispatch 1 **Contrarian** reviewer through that transport — propose experiments that deliberately contradict the current trajectory. Read `references/prompting-codex.md` before composing the request. Include anti-recursion constraints. If no relay transport, dispatch an additional same-model contrarian worker instead and note the downgrade.
+4. Wait for all workers. Synthesize: deduplicate by subsystem + parameter family, pick `wave_size` diverse experiments.
 
 ### Wave Execution
 
@@ -155,23 +155,21 @@ For each wave:
 
 **1. Record wave start.** Update `mar-state.json`: `phase: "wave_running"`, `current_wave++`. Populate `in_flight` array with one entry per hypothesis (experiment_id, hypothesis, base_commit, status: "dispatched"). Write atomically.
 
-**2. Dispatch experimenters.** Read `agents/experimenter.md` ONCE at the start of the loop. For each hypothesis, use the Agent tool:
+**2. Dispatch experimenters.** Read `agents/experimenter.md` ONCE at the start of the loop. For each hypothesis:
 
+a. Create a dedicated worktree and branch:
+```bash
+git worktree add -b mar-wave${N}-exp${M} <worktree_path> <wave_base_commit>
 ```
-Agent(
-  isolation: "worktree",
-  run_in_background: true,
-  prompt: <experimenter.md content with all $VARIABLES replaced>
-)
-```
+Use a path like `.worktrees/mar-wave${N}-exp${M}` relative to the repo root.
 
-**You MUST use the Agent tool with `isolation: "worktree"`.** Do NOT run experiments via Bash commands in the main worktree. Do NOT create worktrees manually. The Agent tool handles worktree creation and cleanup.
+b. Record `experiment_id`, `branch`, `worktree_path`, `base_commit`, and `status: "dispatched"` in `mar-state.json` (in the `in_flight` array). Write atomically.
 
-**Template filling:** Read `agents/experimenter.md` and replace every `$VARIABLE` with the actual value:
+c. Fill `agents/experimenter.md` with experiment-specific variables:
 - `$HYPOTHESIS` → the one-line hypothesis for this experiment
 - `$METRIC_NAME`, `$METRIC_DIRECTION` → from setup
 - `$SANITY_METRIC`, `$SANITY_EXTRACTION` → from setup (or "none")
-- `$COMMAND` → the shell command
+- `$COMMAND` → the shell command (prepend venv activation if needed)
 - `$EXTRACTION` → metric extraction command
 - `$FILES_IN_SCOPE` → the file list
 - `$CONSTRAINTS` → constraint rules
@@ -179,14 +177,19 @@ Agent(
 - `$BEST_METRIC`, `$BASE_COMMIT` → current best
 - `$WAVE_NUMBER`, `$EXP_INDEX`, `$WAVE_SIZE` → wave metadata
 - `$DESCRIPTION` → short description for the commit message
+- `$WORKTREE_PATH` → the worktree path created in step (a)
+
+d. Dispatch one worker with the filled prompt, giving it exclusive ownership of that worktree. Use the platform's native concurrency mechanism:
+- **Claude Code**: `Agent(isolation: "worktree", run_in_background: true, prompt: <filled template>)` — the Agent tool can manage its own worktree, in which case skip step (a) and let the tool create the worktree. Record the returned worktree path in `in_flight`.
+- **Codex / other**: Run the worker sequentially or via platform-native concurrency. The worker must execute all commands from `$WORKTREE_PATH`.
 
 **Prepend venv activation** if the project uses a Python venv: add `source <venv_path>/bin/activate &&` before the command in `$COMMAND`. Detect venv at `.venv/`, `venv/`, or the path the user specified during setup.
 
-**3. Wait for all experimenters.** Hard gate. If any experimenter exceeds the per-experiment timeout (tracked by `dispatched_at` + timeout), it will be marked `timeout` during collection. The Agent tool sends completion notifications — do not poll.
+**3. Wait for all experimenters.** Hard gate — do not proceed until every worker finishes. Use the platform's native wait/completion mechanism. If a worker exceeds the per-experiment timeout (tracked by `dispatched_at` + timeout), mark it `timeout`.
 
-**4. Collect results.** For each completed experimenter:
-- The Agent tool returns the worktree path and branch name in its result (when `isolation: "worktree"` is used and changes were made).
-- Read `experiment-result.json` from the worktree path.
+**4. Collect results.** For each worker:
+- The orchestrator knows each experiment's `worktree_path` from `mar-state.json`.
+- Read `$WORKTREE_PATH/experiment-result.json`.
 - If file is missing: check if a commit was made (`git -C <worktree_path> log --oneline -1`). If commit exists but no result file, attempt metric extraction from `run.log` in the worktree. If still no result, mark `crash`.
 - Verify `base_commit` matches expected `wave_base_commit`. If mismatch, mark `stale`.
 - Update `in_flight` entry status to `done` or `crash`.
@@ -246,7 +249,7 @@ Commit: `git add results.tsv autoresearch.md mar-state.json && git commit -m "wa
 git worktree remove <path> --force 2>/dev/null
 git branch -D <branch> 2>/dev/null
 ```
-If the Agent tool already cleaned up (no changes case), skip gracefully.
+If a worker exited before producing changes and the worktree is already absent, skip gracefully.
 
 **9. Update status.md.** Write the morning summary:
 ```markdown

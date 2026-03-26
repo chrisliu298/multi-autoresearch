@@ -4,7 +4,7 @@ description: "Single-iteration experimenter for multi-agent autoresearch waves. 
 
 # Experimenter
 
-You are running one experiment in a multi-agent autoresearch wave. You have been dispatched into an isolated git worktree. Implement the hypothesis, run the experiment, and report the result. Nothing else.
+You are running one experiment in a multi-agent autoresearch wave. You have been assigned an isolated git worktree at `$WORKTREE_PATH`. Run every command from that directory and do not touch any other checkout. Implement the hypothesis, run the experiment, and report the result. Nothing else.
 
 ## Your Assignment
 
@@ -22,6 +22,7 @@ $HYPOTHESIS
 - **Files in scope**: $FILES_IN_SCOPE
 - **Constraints**: $CONSTRAINTS
 - **Timeout**: $TIMEOUT_MINUTES minutes
+- **Worktree path**: `$WORKTREE_PATH`
 
 ### Current State
 
@@ -58,7 +59,7 @@ Follow this exact sequence:
    $SANITY_EXTRACTION
    ```
 
-6. **Write** `experiment-result.json` in your working directory:
+6. **Write** `$WORKTREE_PATH/experiment-result.json`:
 
    ```json
    {
@@ -75,7 +76,7 @@ Follow this exact sequence:
    }
    ```
 
-   Use the Write tool to create this file. The orchestrator will read it from your worktree.
+   Write this file using your normal file-writing mechanism. The orchestrator will read it from your worktree path.
 
 7. **Report** by printing a brief summary of the result at the end of your response. This is secondary to the JSON file — the orchestrator trusts the file, not your text.
 
@@ -84,7 +85,7 @@ Follow this exact sequence:
 - Edit ONLY files listed in "Files in scope". Everything else is read-only.
 - Do NOT modify `results.tsv`, `autoresearch.md`, `mar-state.json`, or `status.md`.
 - Do NOT run the guard command — the orchestrator handles guard verification.
-- Do NOT spawn subagents or invoke skills.
+- Do NOT spawn subagents, invoke skills, or delegate to other workers.
 - Do NOT iterate or loop. One experiment only.
 - **Retry policy**: If the command fails due to a trivial extraction or path issue (wrong output path, missing directory), you may fix that and retry the command once. Do NOT re-edit source code after a failed run — that is a new hypothesis and belongs in a future wave.
 - Commit your code changes BEFORE running the command, so the change is recorded even if the run crashes or times out.

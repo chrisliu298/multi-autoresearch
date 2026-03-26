@@ -18,7 +18,7 @@ The core loop is Karpathy's autoresearch (`edit → commit → run → measure �
 
 ### Ideation
 
-- **IDEATION_SUBAGENTS = 2** — Number of Claude subagents for divergent hypothesis generation.
+- **IDEATION_WORKERS = 2** — Number of parallel ideation workers for divergent hypothesis generation.
 - **IDEATION_MODE_DEFAULT = "on-stuck"** — Options: `"on-stuck"`, `"wave-0-only"`, `"periodic"`.
 
 ### Budget
@@ -36,7 +36,7 @@ wave_size: number                         # experiments per wave
 workload_class: "gpu-heavy" | "cpu-only" | "lightweight"
 ideation_mode: "on-stuck" | "wave-0-only" | "periodic"
 ideation_interval: number | null          # waves between periodic ideation (if periodic)
-parallax: boolean                         # whether /relay is enabled for ideation
+parallax: boolean                         # whether cross-model ideation is enabled
 metric_direction: "lower" | "higher"      # which direction is better
 current_wave: number                      # 0 = baseline, 1+ = experiment waves
 phase: "setup" | "baseline" | "wave_running" | "between_waves" | "completed" | "failed"
@@ -69,7 +69,7 @@ in_flight: [                              # populated during wave_running, clear
 |------|----------|----------|-------|
 | `mar-state.json` | orchestrator | orchestrator (resume) | Atomic writes. Config + phase pointer. |
 | `results.tsv` | orchestrator | orchestrator, nanoresearch write/review | Nanoresearch-compatible format. Committed after each wave. |
-| `autoresearch.md` | orchestrator | orchestrator (resume), fresh agents | Recovery doc: objective, metric, command, files in scope. |
+| `autoresearch.md` | orchestrator | orchestrator (resume), fresh workers | Recovery doc: objective, metric, command, files in scope. |
 | `status.md` | orchestrator | user (morning read) | Human-readable progress summary. Updated each wave. |
 | `experiment-result.json` | experimenter (in worktree) | orchestrator | Structured result per experiment. Lives in worktree, not committed to main. |
 | `run.log` | experimenter (in worktree) | experimenter (diagnostics) | Command output. Not committed. |

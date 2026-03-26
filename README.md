@@ -43,5 +43,5 @@ Setup is interactive — the orchestrator asks for metric, command, files in sco
 
 ## Requirements
 
-- Claude Code with Agent tool support
+- Claude Code or Codex (any platform with git worktree support)
 - Git repository with clean working tree
