@@ -14,6 +14,16 @@ You are a completely autonomous researcher running parallel experiments. Try thi
 
 Read all constants from this project's **CLAUDE.md** before proceeding. Read the state schema and file contracts.
 
+## Critical Invariants
+
+These are non-negotiable. Violating any of them makes the run unreliable.
+
+1. **Use the Agent tool with `isolation: "worktree"` for every experiment.** Do NOT run experiments via Bash in the main worktree. Each experiment MUST be dispatched as a separate Agent call with `isolation: "worktree"` and `run_in_background: true`. This is the whole point of multi-agent autoresearch.
+2. **Maintain `mar-state.json` throughout.** Create it during setup, update it on every phase transition, write it atomically (temp + rename). This is required for crash recovery.
+3. **Use the nanoresearch-compatible results.tsv format.** 7 TAB-separated columns: `#`, `timestamp`, `commit`, `metric`, `sanity`, `status`, `description`. Not 5 columns. Not CSV. Append `[wave:N]` tag to every description.
+4. **Read `agents/experimenter.md` and use it as the prompt template** for experimenter agents. Fill in the `$VARIABLE` placeholders with actual values. Do not improvise a different prompt.
+5. **Cherry-pick, never merge.** Use plain `git cherry-pick <commit>`. No `-X theirs`. Fail loudly on conflict.
+
 ## Inline Overrides
 
 Parse `$ARGUMENTS` by splitting on ` — `. First segment = topic/goal. Subsequent segments are `key: value` pairs or bare flags. Known overrides:
@@ -71,9 +81,12 @@ Then:
 2. Read every in-scope file AND all relevant read-only files (evaluation code, data loading, configs).
 3. **Preflight**: Verify prerequisites — data/artifacts exist, command is available, output paths are writable, `timeout` command exists (check for `gtimeout` on macOS). If anything is missing, tell the user.
 4. Add `run.log` to `.gitignore` if not present. Commit.
-5. Create `results.tsv` with header: `#\ttimestamp\tcommit\tmetric\tsanity\tstatus\tdescription`
-6. Create `mar-state.json` per the state schema in CLAUDE.md. Set `phase: "baseline"`.
-7. Write atomically: write to `mar-state.json.tmp`, then `mv mar-state.json.tmp mar-state.json`.
+5. Create `results.tsv` with header row (7 TAB-separated columns):
+   ```
+   #	timestamp	commit	metric	sanity	status	description
+   ```
+6. Create `mar-state.json` with ALL fields from the state schema in CLAUDE.md. Set `phase: "baseline"`, `status: "in_progress"`, `current_wave: 0`, `consecutive_all_discard: 0`, `start_time` to now. Include `wave_size`, `workload_class`, `ideation_mode`, `parallax`, `metric_direction`, `budget_hours`, `tag`, `branch`. Set `in_flight: []`.
+7. Write atomically: `echo '<json>' > mar-state.json.tmp && mv mar-state.json.tmp mar-state.json`.
 
 ## Baseline
 
@@ -142,21 +155,32 @@ For each wave:
 
 **1. Record wave start.** Update `mar-state.json`: `phase: "wave_running"`, `current_wave++`. Populate `in_flight` array with one entry per hypothesis (experiment_id, hypothesis, base_commit, status: "dispatched"). Write atomically.
 
-**2. Dispatch experimenters.** Read `agents/experimenter.md` for the prompt template. For each hypothesis:
+**2. Dispatch experimenters.** Read `agents/experimenter.md` ONCE at the start of the loop. For each hypothesis, use the Agent tool:
 
 ```
 Agent(
   isolation: "worktree",
   run_in_background: true,
-  prompt: <fill template from experimenter.md with hypothesis, spec, current state>
+  prompt: <experimenter.md content with all $VARIABLES replaced>
 )
 ```
 
-Each experimenter gets:
-- The assigned hypothesis (one line)
-- Full experiment spec (metric, command, extraction, files in scope, constraints)
-- Current best metric and base commit
-- Timeout in minutes: `min(TIMEOUT_MINUTES, baseline_runtime_sec * EXPERIMENT_TIMEOUT_MULTIPLIER / 60)`
+**You MUST use the Agent tool with `isolation: "worktree"`.** Do NOT run experiments via Bash commands in the main worktree. Do NOT create worktrees manually. The Agent tool handles worktree creation and cleanup.
+
+**Template filling:** Read `agents/experimenter.md` and replace every `$VARIABLE` with the actual value:
+- `$HYPOTHESIS` → the one-line hypothesis for this experiment
+- `$METRIC_NAME`, `$METRIC_DIRECTION` → from setup
+- `$SANITY_METRIC`, `$SANITY_EXTRACTION` → from setup (or "none")
+- `$COMMAND` → the shell command
+- `$EXTRACTION` → metric extraction command
+- `$FILES_IN_SCOPE` → the file list
+- `$CONSTRAINTS` → constraint rules
+- `$TIMEOUT_MINUTES` → `min(TIMEOUT_MINUTES, baseline_runtime_sec * EXPERIMENT_TIMEOUT_MULTIPLIER / 60)`
+- `$BEST_METRIC`, `$BASE_COMMIT` → current best
+- `$WAVE_NUMBER`, `$EXP_INDEX`, `$WAVE_SIZE` → wave metadata
+- `$DESCRIPTION` → short description for the commit message
+
+**Prepend venv activation** if the project uses a Python venv: add `source <venv_path>/bin/activate &&` before the command in `$COMMAND`. Detect venv at `.venv/`, `venv/`, or the path the user specified during setup.
 
 **3. Wait for all experimenters.** Hard gate. If any experimenter exceeds the per-experiment timeout (tracked by `dispatched_at` + timeout), it will be marked `timeout` during collection. The Agent tool sends completion notifications — do not poll.
 
@@ -190,18 +214,30 @@ git cherry-pick <winning_head_commit>
 
 **7. Record all results to results.tsv.**
 
-For each experiment in the wave, append a row:
+**THIS FORMAT IS MANDATORY.** 7 TAB-separated columns. Do NOT use a different format.
+
+For each experiment in the wave, append a row. Use actual TAB characters (`\t`), not spaces.
+
+Header (written during setup):
 ```
-#\ttimestamp\tcommit\tmetric\tsanity\tstatus\tdescription
+#	timestamp	commit	metric	sanity	status	description
 ```
 
-- `#`: Sequential number continuing from last row.
-- `timestamp`: ISO 8601 with seconds.
-- `commit`: The main-branch commit hash for keeps (after cherry-pick), worktree commit for discards/crashes.
-- `metric`: Value or `NA` for crashes.
-- `sanity`: Value or `NA`.
+Example rows:
+```
+0	2026-03-26T10:00:05	a1b2c3d	0.9979	98.2	keep	baseline
+1	2026-03-26T10:12:30	b2c3d4e	0.9932	98.1	keep	increase LR to 0.04 [wave:1]
+2	2026-03-26T10:12:30	c3d4e5f	1.0050	98.3	discard	switch to GeLU [wave:1]
+3	2026-03-26T10:12:30	d4e5f6g	NA	NA	crash	double model width (OOM) [wave:1]
+```
+
+- `#`: Sequential experiment number (0 = baseline, continues across waves).
+- `timestamp`: ISO 8601 with seconds (e.g., `2026-03-26T10:12:30`).
+- `commit`: 7-char git hash. For keeps: the main-branch commit (after cherry-pick). For discards/crashes: the worktree commit.
+- `metric`: Numeric value or `NA` for crashes.
+- `sanity`: Numeric value, `NA`, or empty if no sanity metric.
 - `status`: `keep`, `discard`, or `crash`.
-- `description`: What was tried. Append `[wave:N]` tag.
+- `description`: What was tried. **MUST end with `[wave:N]`** tag (except baseline which is `[wave:0]` or just "baseline").
 
 Commit: `git add results.tsv autoresearch.md mar-state.json && git commit -m "wave $N: $SUMMARY"`.
 
