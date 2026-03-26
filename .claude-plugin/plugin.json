@@ -1,0 +1,5 @@
+{
+  "name": "multi-autoresearch",
+  "version": "0.1.0",
+  "description": "Multi-agent autoresearch: parallel experiments via worktrees, multi-perspective ideation when stuck."
+}
